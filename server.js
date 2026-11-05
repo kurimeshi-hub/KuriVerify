@@ -3,8 +3,19 @@ const express = require('express');
 const session = require('express-session');
 const axios = require('axios');
 
-// 環境変数のチェック
-const requiredEnv = ['BOT_TOKEN', 'CLIENT_ID', 'CLIENT_SECRET', 'GUILD_ID', 'ROLE_ID', 'SESSION_SECRET', 'REDIRECT_URI'];
+// 1. 必要な環境変数がすべて揃っているかチェック
+const requiredEnv = [
+    'BOT_TOKEN', 
+    'CLIENT_ID', 
+    'CLIENT_SECRET', 
+    'GUILD_ID', 
+    'ROLE_ID', 
+    'SESSION_SECRET', 
+    'REDIRECT_URI', 
+    'RECAPTCHA_SITE_KEY', 
+    'RECAPTCHA_SECRET'
+];
+
 for (const env of requiredEnv) {
     if (!process.env[env]) {
         console.error(`Error: Environment variable ${env} is missing.`);
@@ -34,7 +45,7 @@ app.use(session({
 
 const PORT = process.env.PORT || 10000;
 
-// 1. トップページ（reCAPTCHA付き認証画面）
+// 2. トップページ（reCAPTCHA付き認証画面：環境変数からサイトキーを埋め込む）
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -55,7 +66,8 @@ app.get('/', (req, res) => {
                 <h2>Discord Server Verification</h2>
                 <p>サーバーへアクセスするには、ロボットチェックを完了してください。</p>
                 <form action="/auth/discord" method="GET">
-                    <div class="g-recaptcha" data-sitekey="6LcfUBEuAAAAAHJsJPgxbbKEkpc4GUbMhe1woZua" style="display: inline-block;"></div>
+                    <!-- 環境変数から安全にサイトキーを挿入 -->
+                    <div class="g-recaptcha" data-sitekey="${process.env.RECAPTCHA_SITE_KEY}" style="display: inline-block;"></div>
                     <br>
                     <button type="submit" class="btn">Discordでログインして認証</button>
                 </form>
@@ -65,7 +77,7 @@ app.get('/', (req, res) => {
     `);
 });
 
-// 2. reCAPTCHA検証 & Discord OAuth2へリダイレクト
+// 3. reCAPTCHA検証 & Discord OAuth2へリダイレクト
 app.get('/auth/discord', async (req, res) => {
     const recaptchaResponse = req.query['g-recaptcha-response'];
     if (!recaptchaResponse) {
@@ -73,8 +85,8 @@ app.get('/auth/discord', async (req, res) => {
     }
 
     try {
-        const secretKey = '6LcfUBEuAAAAABi9-mAh-0HkRjkPB1Fuk6SecLef';
-        const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaResponse}`;
+        // 環境変数からシークレットキーを取得して検証
+        const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET}&response=${recaptchaResponse}`;
         const response = await axios.post(verifyUrl);
 
         if (response.data.success) {
@@ -89,13 +101,12 @@ app.get('/auth/discord', async (req, res) => {
     }
 });
 
-// 3. Discord OAuth2 コールバック処理（ロール付与）
+// 4. Discord OAuth2 コールバック処理（ロール付与）
 app.get('/callback', async (req, res) => {
     const code = req.query.code;
     if (!code) return res.status(400).send('認証コードがありません。');
 
     try {
-        // アクセストークンの取得
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: process.env.CLIENT_ID,
             client_secret: process.env.CLIENT_SECRET,
@@ -108,20 +119,18 @@ app.get('/callback', async (req, res) => {
 
         const accessToken = tokenResponse.data.access_token;
 
-        // ユーザー情報の取得
         const userResponse = await axios.get('https://discord.com/api/users/@me', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
         const userId = userResponse.data.id;
 
-        // サーバーへの参加＆ロール付与
         const guild = await client.guilds.fetch(process.env.GUILD_ID);
         
         await axios.put(`https://discord.com/api/guilds/${process.env.GUILD_ID}/members/${userId}`, {
             access_token: accessToken
         }, {
             headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` }
-        }).catch(() => {}); // 既にサーバーにいる場合はスルー
+        }).catch(() => {});
 
         const member = await guild.members.fetch(userId);
         if (member) {
@@ -144,7 +153,7 @@ app.get('/callback', async (req, res) => {
     }
 });
 
-// 4. Discord Bot: !verify コマンドで認証パネルを送信
+// 5. Discord Bot: !verify コマンドで認証パネルを送信
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
@@ -176,7 +185,6 @@ client.once('ready', () => {
     console.log(`Botがログインしました: ${client.user.tag}`);
 });
 
-// サーバー起動
 app.listen(PORT, () => {
     console.log(`サーバーが起動しました (Port: ${PORT})`);
 });
