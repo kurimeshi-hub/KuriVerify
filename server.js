@@ -153,12 +153,12 @@ app.get('/callback', async (req, res) => {
     }
 });
 
-// 5. Discord Bot: !verify コマンドで認証パネルを送信（修正版）
+// 5. Discord Bot: !verify コマンドで認証パネルを送信
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
     if (message.content === '!verify') {
-        // サーバー所有者、または管理者権限（フラグ・文字列の両方）を確実に判定
+        // サーバー所有者、または管理者権限をチェック
         const isAdmin = message.guild.ownerId === message.author.id || 
                         message.member.permissions.has('Administrator') || 
                         message.member.permissions.has(PermissionsBitField.Flags.Administrator);
@@ -176,15 +176,15 @@ client.on('messageCreate', async (message) => {
             .setDescription('To access このサーバー, you need to pass verification first.\nClick on the Verify button below to start.')
             .setColor(0x5865F2);
 
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setLabel('Verify')
-                    .setStyle(ButtonStyle.Link)
-                    .setUrl('https://kuriverify.onrender.com/')
-            );
+        // ボタンの生成（互換性エラー回避のため setURL と Style 指定を修正）
+        const verifyButton = new ButtonBuilder()
+            .setLabel('Verify')
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://kuriverify.onrender.com/');
 
-        // パネル送信。万が一失敗した場合はRenderのLogsにエラーを表示
+        const row = new ActionRowBuilder().addComponents(verifyButton);
+
+        // パネル送信。エラー時はログに出力
         await message.channel.send({ embeds: [embed], components: [row] })
             .catch(err => console.error('パネルの送信に失敗しました:', err));
     }
