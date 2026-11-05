@@ -153,15 +153,22 @@ app.get('/callback', async (req, res) => {
     }
 });
 
-// 5. Discord Bot: !verify コマンドで認証パネルを送信
+// 5. Discord Bot: !verify コマンドで認証パネルを送信（修正版）
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
     if (message.content === '!verify') {
-        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-            return message.reply('このコマンドを実行する権限がありません。');
+        // サーバー所有者、または管理者権限（フラグ・文字列の両方）を確実に判定
+        const isAdmin = message.guild.ownerId === message.author.id || 
+                        message.member.permissions.has('Administrator') || 
+                        message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+        if (!isAdmin) {
+            console.log(`${message.author.tag} は管理者権限がないため弾かれました`);
+            return message.reply('このコマンドを実行する権限がありません。').catch(() => {});
         }
 
+        // コマンドメッセージを削除
         await message.delete().catch(() => {});
 
         const embed = new EmbedBuilder()
@@ -177,7 +184,9 @@ client.on('messageCreate', async (message) => {
                     .setUrl('https://kuriverify.onrender.com/')
             );
 
-        await message.channel.send({ embeds: [embed], components: [row] });
+        // パネル送信。万が一失敗した場合はRenderのLogsにエラーを表示
+        await message.channel.send({ embeds: [embed], components: [row] })
+            .catch(err => console.error('パネルの送信に失敗しました:', err));
     }
 });
 
