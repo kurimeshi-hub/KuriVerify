@@ -1,53 +1,101 @@
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
 const express = require('express');
 const session = require('express-session');
 const axios = require('axios');
-const { Client, GatewayIntentBits } = require('discord.js');
-require('dotenv').config();
 
+// 環境変数のチェック
+const requiredEnv = ['BOT_TOKEN', 'CLIENT_ID', 'CLIENT_SECRET', 'GUILD_ID', 'ROLE_ID', 'SESSION_SECRET', 'REDIRECT_URI'];
+for (const env of requiredEnv) {
+    if (!process.env[env]) {
+        console.error(`Error: Environment variable ${env} is missing.`);
+        process.exit(1);
+    }
+}
+
+// Discord Client の初期化
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+    ]
+});
+
+// Express アプリの初期化
 const app = express();
-
-// Expressセッション設定
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'random_secret_key_here',
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
 }));
 
-// Discord Botのクライアント（サーバーにユーザーを追加・ロール付与するため）
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
-});
+const PORT = process.env.PORT || 10000;
 
-client.once('ready', () => {
-    console.log(`Botがログインしました: ${client.user.tag}`);
-});
-
-client.login(process.env.BOT_TOKEN);
-
-// 1. トップページ（ログインボタンを表示）
+// 1. トップページ（reCAPTCHA付き認証画面）
 app.get('/', (req, res) => {
-    const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
-    
     res.send(`
-        <html>
-            <body style="font-family: sans-serif; text-align: center; margin-top: 100px; background-color: #f4f6f8;">
-                <div style="background: white; padding: 40px; display: inline-block; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-                    <h1>サーバー認証ページ</h1>
-                    <p style="color: #666; margin-bottom: 30px;">下のボタンを押してDiscord連携を行い、サーバーに参加してください。</p>
-                    <a href="${discordAuthUrl}" style="background: #5865F2; color: white; padding: 14px 28px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Discordでログインして認証</a>
-                </div>
-            </body>
+        <!DOCTYPE html>
+        <html lang="ja">
+        <head>
+            <meta charset="UTF-8">
+            <title>KuriVerify - 認証</title>
+            <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+            <style>
+                body { font-family: sans-serif; text-align: center; margin-top: 100px; background-color: #313338; color: #dbdee1; }
+                .card { background-color: #2b2d31; padding: 40px; border-radius: 8px; display: inline-block; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+                .btn { margin-top: 20px; padding: 12px 24px; font-size: 16px; background-color: #5865F2; color: white; border: none; border-radius: 4px; cursor: pointer; }
+                .btn:hover { background-color: #4752C4; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>Discord Server Verification</h2>
+                <p>サーバーへアクセスするには、ロボットチェックを完了してください。</p>
+                <form action="/auth/discord" method="GET">
+                    <div class="g-recaptcha" data-sitekey="6LcfUBEuAAAAAHJsJPgxbbKEkpc4GUbMhe1woZua" style="display: inline-block;"></div>
+                    <br>
+                    <button type="submit" class="btn">Discordでログインして認証</button>
+                </form>
+            </div>
+        </body>
         </html>
     `);
 });
 
-// 2. 認証後のコールバック処理
-app.get('/callback', async (req, res) => {
-    const code = req.query.code;
-    if (!code) return res.status(400).send('認証コードが見つかりません。');
+// 2. reCAPTCHA検証 & Discord OAuth2へリダイレクト
+app.get('/auth/discord', async (req, res) => {
+    const recaptchaResponse = req.query['g-recaptcha-response'];
+    if (!recaptchaResponse) {
+        return res.send('ロボットチェックを完了してください。<a href="/">戻る</a>');
+    }
 
     try {
-        // A. 認証コードを使ってアクセストークンを取得
+        const secretKey = '6LcfUBEuAAAAABi9-mAh-0HkRjkPB1Fuk6SecLef';
+        const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaResponse}`;
+        const response = await axios.post(verifyUrl);
+
+        if (response.data.success) {
+            const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
+            return res.redirect(discordAuthUrl);
+        } else {
+            return res.send('ロボットチェックに失敗しました。<a href="/">もう一度試す</a>');
+        }
+    } catch (err) {
+        console.error(err);
+        return res.send('エラーが発生しました。');
+    }
+});
+
+// 3. Discord OAuth2 コールバック処理（ロール付与）
+app.get('/callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) return res.status(400).send('認証コードがありません。');
+
+    try {
+        // アクセストークンの取得
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: process.env.CLIENT_ID,
             client_secret: process.env.CLIENT_SECRET,
@@ -60,42 +108,77 @@ app.get('/callback', async (req, res) => {
 
         const accessToken = tokenResponse.data.access_token;
 
-        // B. ユーザーのDiscordプロフィール情報を取得
+        // ユーザー情報の取得
         const userResponse = await axios.get('https://discord.com/api/users/@me', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
         const userId = userResponse.data.id;
-        const userName = userResponse.data.username;
 
-        // C. サーバーにユーザーを強制参加させ、ロールを付与する
+        // サーバーへの参加＆ロール付与
         const guild = await client.guilds.fetch(process.env.GUILD_ID);
         
-        // ユーザーをサーバーに追加（guilds.joinスコープが必要）
-        await guild.members.add(userId, { accessToken: accessToken });
-        
-        // メンバー情報を取得してロールを付与
-        const member = await guild.members.fetch(userId);
-        await member.roles.add(process.env.ROLE_ID);
+        await axios.put(`https://discord.com/api/guilds/${process.env.GUILD_ID}/members/${userId}`, {
+            access_token: accessToken
+        }, {
+            headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` }
+        }).catch(() => {}); // 既にサーバーにいる場合はスルー
 
-        console.log(`[認証成功] ${userName} (${userId}) にロールを付与しました。`);
+        const member = await guild.members.fetch(userId);
+        if (member) {
+            await member.roles.add(process.env.ROLE_ID);
+        }
 
         res.send(`
-            <html>
-                <body style="font-family: sans-serif; text-align: center; margin-top: 100px;">
-                    <h1 style="color: #2ecc71;">認証成功！</h1>
-                    <p>${userName}さん、Discordサーバーへの参加と認証が完了しました。Discordアプリをご確認ください。</p>
-                </body>
+            <!DOCTYPE html>
+            <html lang="ja">
+            <head><meta charset="UTF-8"><title>認証成功</title></head>
+            <body style="font-family: sans-serif; text-align: center; margin-top: 100px; background-color: #313338; color: #dbdee1;">
+                <h2>認証が成功しました！</h2>
+                <p>Discordサーバーに戻ってロールが付与されているか確認してください。</p>
+            </body>
             </html>
         `);
-
     } catch (error) {
-        console.error('認証エラー:', error.response?.data || error.message);
-        res.status(500).send('認証処理中にエラーが発生しました。コンソールログを確認してください。');
+        console.error(error);
+        res.status(500).send('認証処理中にエラーが発生しました。');
     }
 });
 
-// DiscloudはPORT環境変数を自動指定するため、それに合わせる
-const PORT = process.env.PORT || 3000;
+// 4. Discord Bot: !verify コマンドで認証パネルを送信
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+
+    if (message.content === '!verify') {
+        if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+            return message.reply('このコマンドを実行する権限がありません。');
+        }
+
+        await message.delete().catch(() => {});
+
+        const embed = new EmbedBuilder()
+            .setTitle('Verification Required!')
+            .setDescription('To access このサーバー, you need to pass verification first.\nClick on the Verify button below to start.')
+            .setColor(0x5865F2);
+
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setLabel('Verify')
+                    .setStyle(ButtonStyle.Link)
+                    .setUrl('https://kuriverify.onrender.com/')
+            );
+
+        await message.channel.send({ embeds: [embed], components: [row] });
+    }
+});
+
+client.once('ready', () => {
+    console.log(`Botがログインしました: ${client.user.tag}`);
+});
+
+// サーバー起動
 app.listen(PORT, () => {
     console.log(`サーバーが起動しました (Port: ${PORT})`);
 });
+
+client.login(process.env.BOT_TOKEN);
