@@ -85,7 +85,6 @@ app.get('/auth/discord', async (req, res) => {
     }
 
     try {
-        // 環境変数からシークレットキーを取得して検証
         const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET}&response=${recaptchaResponse}`;
         const response = await axios.post(verifyUrl);
 
@@ -96,17 +95,20 @@ app.get('/auth/discord', async (req, res) => {
             return res.send('ロボットチェックに失敗しました。<a href="/">もう一度試す</a>');
         }
     } catch (err) {
-        console.error(err);
+        console.error('reCAPTCHA検証エラー:', err);
         return res.send('エラーが発生しました。');
     }
 });
 
-// 4. Discord OAuth2 コールバック処理（ロール付与）
+// 4. Discord OAuth2 コールバック処理（ロール付与・詳細エラーログ出力版）
 app.get('/callback', async (req, res) => {
     const code = req.query.code;
     if (!code) return res.status(400).send('認証コードがありません。');
 
     try {
+        console.log('--- OAuth2コールバック処理開始 ---');
+        
+        // トークン取得
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: process.env.CLIENT_ID,
             client_secret: process.env.CLIENT_SECRET,
@@ -118,23 +120,33 @@ app.get('/callback', async (req, res) => {
         });
 
         const accessToken = tokenResponse.data.access_token;
+        console.log('アクセストークン取得成功');
 
+        // ユーザー情報取得
         const userResponse = await axios.get('https://discord.com/api/users/@me', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
         const userId = userResponse.data.id;
+        console.log(`ユーザーID取得成功: ${userId}`);
 
         const guild = await client.guilds.fetch(process.env.GUILD_ID);
         
+        // サーバーへユーザーを追加 (guilds.joinスコープ)
         await axios.put(`https://discord.com/api/guilds/${process.env.GUILD_ID}/members/${userId}`, {
             access_token: accessToken
         }, {
             headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` }
-        }).catch(() => {});
+        }).catch(err => {
+            console.log('メンバー追加APIのレスポンス（既にいる場合はエラーになりますが通常続行します）:', err.response?.data || err.message);
+        });
 
+        // メンバー情報とロール付与
         const member = await guild.members.fetch(userId);
         if (member) {
             await member.roles.add(process.env.ROLE_ID);
+            console.log(`ユーザー ${userId} にロール ${process.env.ROLE_ID} を付与しました！`);
+        } else {
+            console.error('メンバーの取得に失敗しました');
         }
 
         res.send(`
@@ -148,8 +160,9 @@ app.get('/callback', async (req, res) => {
             </html>
         `);
     } catch (error) {
-        console.error(error);
-        res.status(500).send('認証処理中にエラーが発生しました。');
+        console.error('--- コールバック処理でエラー発生 ---');
+        console.error(error.response?.data || error.message);
+        res.status(500).send('認証処理中にエラーが発生しました。詳細はRenderのLogsをご確認ください。');
     }
 });
 
@@ -158,25 +171,21 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
     if (message.content === '!verify') {
-        // サーバー所有者、または管理者権限をチェック
         const isAdmin = message.guild.ownerId === message.author.id || 
                         message.member.permissions.has('Administrator') || 
                         message.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
         if (!isAdmin) {
-            console.log(`${message.author.tag} は管理者権限がないため弾かれました`);
             return message.reply('このコマンドを実行する権限がありません。').catch(() => {});
         }
 
-        // コマンドメッセージを削除
         await message.delete().catch(() => {});
 
         const embed = new EmbedBuilder()
             .setTitle('Verification Required!')
-            .setDescription('To access このサーバー, you need to pass verification first.\nClick on the Verify button below to start.')
+            .setDescription('To access this server, you need to pass verification first.\nClick on the Verify button below to start.')
             .setColor(0x5865F2);
 
-        // ボタンの生成（互換性エラー回避のため setURL と Style 指定を修正）
         const verifyButton = new ButtonBuilder()
             .setLabel('Verify')
             .setStyle(ButtonStyle.Link)
@@ -184,7 +193,6 @@ client.on('messageCreate', async (message) => {
 
         const row = new ActionRowBuilder().addComponents(verifyButton);
 
-        // パネル送信。エラー時はログに出力
         await message.channel.send({ embeds: [embed], components: [row] })
             .catch(err => console.error('パネルの送信に失敗しました:', err));
     }
