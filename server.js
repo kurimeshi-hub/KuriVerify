@@ -108,7 +108,6 @@ app.get('/callback', async (req, res) => {
     try {
         console.log('--- OAuth2コールバック処理開始 ---');
         
-        // トークン取得
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: process.env.CLIENT_ID,
             client_secret: process.env.CLIENT_SECRET,
@@ -122,7 +121,6 @@ app.get('/callback', async (req, res) => {
         const accessToken = tokenResponse.data.access_token;
         console.log('アクセストークン取得成功');
 
-        // ユーザー情報取得
         const userResponse = await axios.get('https://discord.com/api/users/@me', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
@@ -131,16 +129,14 @@ app.get('/callback', async (req, res) => {
 
         const guild = await client.guilds.fetch(process.env.GUILD_ID);
         
-        // サーバーへユーザーを追加 (guilds.joinスコープ)
         await axios.put(`https://discord.com/api/guilds/${process.env.GUILD_ID}/members/${userId}`, {
             access_token: accessToken
         }, {
             headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` }
         }).catch(err => {
-            console.log('メンバー追加APIのレスポンス（既にいる場合はエラーになりますが通常続行します）:', err.response?.data || err.message);
+            console.log('メンバー追加APIのレスポンス:', err.response?.data || err.message);
         });
 
-        // メンバー情報とロール付与
         const member = await guild.members.fetch(userId);
         if (member) {
             await member.roles.add(process.env.ROLE_ID);
@@ -166,7 +162,7 @@ app.get('/callback', async (req, res) => {
     }
 });
 
-// 5. Discord Bot: !verify コマンドで認証パネルを送信
+// 5. Discord Bot: !verify コマンドで認証パネルを送信（日本語化対応）
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
@@ -181,13 +177,14 @@ client.on('messageCreate', async (message) => {
 
         await message.delete().catch(() => {});
 
+        // 英語から日本語へ変更
         const embed = new EmbedBuilder()
-            .setTitle('Verification Required!')
-            .setDescription('To access this server, you need to pass verification first.\nClick on the Verify button below to start.')
+            .setTitle('サーバー認証')
+            .setDescription('サーバーを利用するには、認証を完了する必要があります。\n下の「認証する」ボタンをクリックして進んでください。')
             .setColor(0x5865F2);
 
         const verifyButton = new ButtonBuilder()
-            .setLabel('Verify')
+            .setLabel('認証する')
             .setStyle(ButtonStyle.Link)
             .setURL('https://kuriverify.onrender.com/');
 
